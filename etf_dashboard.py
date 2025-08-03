@@ -10,6 +10,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
 from pandas.tseries.offsets import DateOffset
+from pandas_datareader import data as web
 import yfinance as yf
 import statsmodels.api as sm
 import warnings
