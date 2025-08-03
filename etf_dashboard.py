@@ -16,8 +16,12 @@ import statsmodels.api as sm
 import warnings
 import altair as alt
 import webbrowser
+import yfinance.shared
+from yfinance import pdr_override
 
-
+yf.pdr_override()
+yf.enable_debug_mode()  
+yf.set_tz_cache_location(".")  
 warnings.filterwarnings("ignore", category=FutureWarning)
 st.set_page_config(page_title="ETF Dashboard", layout="wide")
 
