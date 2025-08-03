@@ -4,4 +4,3 @@ numpy>=1.23.0
 yfinance>=0.2.33
 statsmodels>=0.14.0
 matplotlib>=3.7.0
-pandas_datareader>=0.10.0
