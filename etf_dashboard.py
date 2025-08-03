@@ -17,6 +17,7 @@ import warnings
 import altair as alt
 import webbrowser
 
+
 warnings.filterwarnings("ignore", category=FutureWarning)
 st.set_page_config(page_title="ETF Dashboard", layout="wide")
 
