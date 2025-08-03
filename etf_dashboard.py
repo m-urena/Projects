@@ -12,7 +12,6 @@ from datetime import datetime
 from pandas.tseries.offsets import DateOffset
 import yfinance as yf
 import statsmodels.api as sm
-from pandas_datareader import data as web
 import warnings
 import altair as alt
 import webbrowser
