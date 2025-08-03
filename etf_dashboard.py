@@ -1,24 +1,21 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[139]:
-
-
-#!/usr/bin/env python
-# coding: utf-8
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
-from pandas.tseries.offsets import DateOffset
-from pandas_datareader import data as web
-import yfinance as yf
+from alpha_vantage.timeseries import TimeSeries
+from alpha_vantage.fundamentaldata import FundamentalData
+from alpha_vantage.alpha_vantage_api import AlphaVantage
 import statsmodels.api as sm
 import warnings
 import altair as alt
 
+API_KEY = "ZULKAGMB68HF6I9V"
+ts = TimeSeries(key=API_KEY, output_format='pandas')
+fd = FundamentalData(key=API_KEY, output_format='pandas')
 warnings.filterwarnings("ignore", category=FutureWarning)
 st.set_page_config(page_title="ETF Dashboard", layout="wide")
 
@@ -31,6 +28,17 @@ def format_aum(value):
         return f"${value / 1e6:.2f}M"
     else:
         return f"${value:,.0f}"
+
+def get_alpha_prices(ticker, start, end):
+    try:
+        df, _ = ts.get_daily_adjusted(symbol=ticker, outputsize='full')
+        df = df.sort_index()
+        df = df[['5. adjusted close']].rename(columns={'5. adjusted close': 'Close'})
+        df = df[(df.index >= start) & (df.index <= end)]
+        df.index = pd.to_datetime(df.index)
+        return df
+    except:
+        return pd.DataFrame()
 
 def calculate_stats(prices, benchmark_prices, risk_free_rate=0.01):
     returns = prices.pct_change().dropna()
@@ -51,66 +59,21 @@ def calculate_stats(prices, benchmark_prices, risk_free_rate=0.01):
     return std_dev, sharpe, sortino, max_drawdown, beta
 
 def plot_normalized_chart(tickers, start, end):
-    norm_data = yf.download(tickers, start=start, end=end, auto_adjust=True, progress=False)["Close"]
+    norm_data = pd.DataFrame()
+    for t in tickers:
+        data = get_alpha_prices(t, start, end)
+        if not data.empty:
+            norm_data[t] = data['Close']
     norm_data = norm_data / norm_data.iloc[0]
-    norm_data = norm_data.reset_index().melt(id_vars='Date', var_name='Ticker', value_name='Normalized Price')
+    norm_data = norm_data.reset_index().melt(id_vars='date', var_name='Ticker', value_name='Normalized Price')
 
     chart = alt.Chart(norm_data).mark_line().encode(
-        x='Date:T',
+        x='date:T',
         y=alt.Y('Normalized Price:Q', scale=alt.Scale(zero=False)),
         color='Ticker:N'
     ).properties(title="Normalized Price Chart")
 
     st.altair_chart(chart, use_container_width=True)
-
-def factor_diligence(tickers, start_date, end_date):
-    ff = web.DataReader("F-F_Research_Data_Factors_Daily", "famafrench", start=start_date, end=end_date)[0] / 100
-    ff.index = pd.to_datetime(ff.index)
-
-    factor_data = []
-
-    for t in tickers:
-        prices = yf.download(t, start=start_date, end=end_date, auto_adjust=True, progress=False)["Close"]
-        if prices.empty:
-            factor_data.append({
-                "Ticker": t,
-                "Alpha (Ann.)": None,
-                "Beta (MKT)": None,
-                "Beta (SMB)": None,
-                "Beta (HML)": None,
-                "R-Squared": None
-            })
-            continue
-
-        returns = prices.pct_change().dropna()
-        df = pd.concat([returns, ff], axis=1).dropna()
-        df.columns = ["Return"] + list(ff.columns)
-
-        if df.empty or "Return" not in df.columns:
-            factor_data.append({
-                "Ticker": t,
-                "Alpha (Ann.)": None,
-                "Beta (MKT)": None,
-                "Beta (SMB)": None,
-                "Beta (HML)": None,
-                "R-Squared": None
-            })
-            continue
-
-        X = sm.add_constant(df[["Mkt-RF", "SMB", "HML"]])
-        y = df["Return"] - df["RF"]
-        model = sm.OLS(y, X).fit()
-
-        factor_data.append({
-            "Ticker": t,
-            "Alpha (Ann.)": round(model.params["const"] * 252, 4),
-            "Beta (MKT)": round(model.params["Mkt-RF"], 4),
-            "Beta (SMB)": round(model.params["SMB"], 4),
-            "Beta (HML)": round(model.params["HML"], 4),
-            "R-Squared": round(model.rsquared, 4)
-        })
-
-    return pd.DataFrame(factor_data)
 
 def diligence(tickers, start_date_str):
     try:
@@ -123,25 +86,30 @@ def diligence(tickers, start_date_str):
     price_data = {}
 
     for t in tickers:
-        data = yf.download(t, start=start_date, end=end_date, auto_adjust=True, progress=False)["Close"]
+        data = get_alpha_prices(t, start_date, end_date)
         if data.empty:
             st.error(f"No data available for {t}.")
             return pd.DataFrame(), None, None
         price_data[t] = data
-    adjusted_start = max(df.index[0] for df in price_data.values())
 
-    benchmark = yf.download("SPY", start=adjusted_start, end=end_date, auto_adjust=True, progress=False)["Close"]
+    adjusted_start = max(df.index[0] for df in price_data.values())
+    benchmark = get_alpha_prices("SPY", adjusted_start, end_date)
+    benchmark = benchmark["Close"]
+
     records = []
 
     for t in tickers:
-        info = yf.Ticker(t).info
-        nav = info.get("navPrice", np.nan)
-        aum = info.get("totalAssets", np.nan)
-        expense = info.get("netExpenseRatio", np.nan)
-        div_yield = info.get("yield", np.nan)
+        try:
+            overview, _ = fd.get_company_overview(t)
+            nav = np.nan
+            aum = float(overview.get("MarketCapitalization", np.nan))
+            expense = float(overview.get("ExpenseRatio", np.nan))
+            div_yield = float(overview.get("DividendYield", np.nan))
+        except:
+            nav, aum, expense, div_yield = np.nan, np.nan, np.nan, np.nan
 
         data = price_data[t].loc[adjusted_start:]
-        std_dev, sharpe, sortino, max_drawdown, beta = calculate_stats(data, benchmark)
+        std_dev, sharpe, sortino, max_drawdown, beta = calculate_stats(data["Close"], benchmark)
 
         records.append({
             "Ticker": t,
@@ -169,23 +137,10 @@ def main():
             df, start, end = diligence(tickers, start_date_input)
             if df.empty:
                 return
-            factor_df = factor_diligence(tickers, start, end)
-
             st.subheader("Performance & Risk Metrics")
             st.dataframe(df)
-
-            st.subheader("Fama-French Factor Loadings")
-            st.dataframe(factor_df)
 
             st.subheader("Normalized Price Chart")
             plot_normalized_chart(tickers, start, end)
 
 main()
-
-
-
-# In[113]:
-
-
-
-
