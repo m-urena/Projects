@@ -4,6 +4,9 @@
 # In[139]:
 
 
+#!/usr/bin/env python
+# coding: utf-8
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -15,13 +18,7 @@ import yfinance as yf
 import statsmodels.api as sm
 import warnings
 import altair as alt
-import webbrowser
-import yfinance.shared
-from yfinance import pdr_override
 
-pdr_override()
-yf.enable_debug_mode()  
-yf.set_tz_cache_location(".")  
 warnings.filterwarnings("ignore", category=FutureWarning)
 st.set_page_config(page_title="ETF Dashboard", layout="wide")
 
@@ -87,7 +84,7 @@ def factor_diligence(tickers, start_date, end_date):
 
         returns = prices.pct_change().dropna()
         df = pd.concat([returns, ff], axis=1).dropna()
-        df.columns = ["Return"] + list(ff.columns)  # <- Fix column name after concat
+        df.columns = ["Return"] + list(ff.columns)
 
         if df.empty or "Return" not in df.columns:
             factor_data.append({
@@ -115,7 +112,6 @@ def factor_diligence(tickers, start_date, end_date):
 
     return pd.DataFrame(factor_data)
 
-
 def diligence(tickers, start_date_str):
     try:
         start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
@@ -126,7 +122,6 @@ def diligence(tickers, start_date_str):
     end_date = datetime.today()
     price_data = {}
 
-    # Get earliest valid start date across all tickers
     for t in tickers:
         data = yf.download(t, start=start_date, end=end_date, auto_adjust=True, progress=False)["Close"]
         if data.empty:
@@ -183,13 +178,10 @@ def main():
             st.dataframe(factor_df)
 
             st.subheader("Normalized Price Chart")
-            norm_data = yf.download(tickers, start=start, end=end, auto_adjust=True, progress=False)["Close"]
-            norm_data = norm_data / norm_data.iloc[0]
             plot_normalized_chart(tickers, start, end)
 
 main()
 
-webbrowser.open("http://localhost:8501")
 
 
 # In[113]:
