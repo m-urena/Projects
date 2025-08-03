@@ -19,7 +19,7 @@ import webbrowser
 import yfinance.shared
 from yfinance import pdr_override
 
-yf.pdr_override()
+pdr_override()
 yf.enable_debug_mode()  
 yf.set_tz_cache_location(".")  
 warnings.filterwarnings("ignore", category=FutureWarning)
