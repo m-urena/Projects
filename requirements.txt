@@ -1,8 +1,7 @@
-streamlit==1.36.0
-pandas==2.2.2
-numpy==1.26.4
-matplotlib==3.8.4
-yfinance==0.2.41
-pandas-datareader==0.10.0
-scipy==1.11.4
-statsmodels==0.14.2
+streamlit
+pandas
+numpy
+matplotlib
+altair
+statsmodels
+alpha_vantage
