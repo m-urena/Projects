@@ -3,18 +3,16 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
-from alpha_vantage.timeseries import TimeSeries
-from alpha_vantage.fundamentaldata import FundamentalData
+from pandas_datareader import data as web
+import yfinance as yf
 import statsmodels.api as sm
-import altair as alt
 import warnings
+import altair as alt
+import webbrowser
+from IPython.display import display, HTML
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 st.set_page_config(page_title="ETF Dashboard", layout="wide")
-
-ALPHA_KEY = "ZULKAGMB68HF6I9V"
-ts = TimeSeries(key=ALPHA_KEY, output_format='pandas')
-fd = FundamentalData(key=ALPHA_KEY)
 
 def format_aum(value):
     if value >= 1e12:
@@ -25,16 +23,6 @@ def format_aum(value):
         return f"${value / 1e6:.2f}M"
     else:
         return f"${value:,.0f}"
-
-def fetch_close_prices(ticker, start, end):
-    try:
-        data, _ = ts.get_daily_adjusted(ticker, outputsize='full')
-        data = data.rename(columns={"5. adjusted close": "Close"})
-        data.index = pd.to_datetime(data.index)
-        filtered = data.loc[(data.index >= pd.to_datetime(start)) & (data.index <= pd.to_datetime(end))]
-        return filtered.sort_index()["Close"]
-    except Exception:
-        return pd.Series()
 
 def calculate_stats(prices, benchmark_prices, risk_free_rate=0.01):
     returns = prices.pct_change().dropna()
@@ -54,60 +42,12 @@ def calculate_stats(prices, benchmark_prices, risk_free_rate=0.01):
     beta = float(np.cov(returns, benchmark_returns)[0, 1] / np.var(benchmark_returns))
     return std_dev, sharpe, sortino, max_drawdown, beta
 
-def diligence(tickers, start):
-    end = datetime.today()
-    prices = {}
-    for t in tickers:
-        series = fetch_close_prices(t, start, end)
-        if series.empty:
-            st.error(f"Data not available for {t}")
-            return pd.DataFrame(), None, None
-        prices[t] = series
-    adjusted_start = max(s.index[0] for s in prices.values())
-    for t in tickers:
-        prices[t] = prices[t][adjusted_start:]
-    benchmark = fetch_close_prices("SPY", adjusted_start, end)
-
-    records = []
-    for t in tickers:
-        try:
-            overview, _ = fd.get_company_overview(t)
-        except Exception:
-            overview = {}
-
-        nav = np.nan
-        aum = float(overview.get("MarketCapitalization", "nan"))
-        expense = float(overview.get("ExpenseRatio", "nan"))
-        yield_ = float(overview.get("DividendYield", "nan"))
-
-        stats = calculate_stats(prices[t], benchmark)
-
-        records.append({
-            "Ticker": t,
-            "NAV ($)": round(nav, 4) if pd.notna(nav) else np.nan,
-            "AUM ($)": format_aum(aum) if pd.notna(aum) else np.nan,
-            "Expense Ratio": expense,
-            "Dividend Yield": yield_,
-            "Volatility": stats[0],
-            "Sharpe": stats[1],
-            "Sortino": stats[2],
-            "Max Drawdown": stats[3],
-            "Beta": stats[4]
-        })
-    return pd.DataFrame(records), adjusted_start, end
-
 def plot_normalized_chart(tickers, start, end):
-    df = pd.DataFrame()
-    for t in tickers:
-        prices = fetch_close_prices(t, start, end)
-        if prices.empty:
-            continue
-        df[t] = prices
-    df = df / df.iloc[0]
-    df = df.reset_index().melt(id_vars='index', var_name='Ticker', value_name='Normalized Price')
-    df = df.rename(columns={"index": "Date"})
+    norm_data = yf.download(tickers, start=start, end=end, auto_adjust=True, progress=False)["Close"]
+    norm_data = norm_data / norm_data.iloc[0]
+    norm_data = norm_data.reset_index().melt(id_vars='Date', var_name='Ticker', value_name='Normalized Price')
 
-    chart = alt.Chart(df).mark_line().encode(
+    chart = alt.Chart(norm_data).mark_line().encode(
         x='Date:T',
         y=alt.Y('Normalized Price:Q', scale=alt.Scale(zero=False)),
         color='Ticker:N'
@@ -115,21 +55,147 @@ def plot_normalized_chart(tickers, start, end):
 
     st.altair_chart(chart, use_container_width=True)
 
+def factor_diligence(tickers, start_date, end_date):
+    ff = web.DataReader("F-F_Research_Data_Factors_Daily", "famafrench", start=start_date, end=end_date)[0] / 100
+    ff.index = pd.to_datetime(ff.index)
+
+    factor_data = []
+
+    for t in tickers:
+        prices = yf.download(t, start=start_date, end=end_date, auto_adjust=True, progress=False)["Close"]
+        if prices.empty:
+            factor_data.append({
+                "Ticker": t,
+                "Alpha (Ann.)": None,
+                "Beta (MKT)": None,
+                "Beta (SMB)": None,
+                "Beta (HML)": None,
+                "R-Squared": None
+            })
+            continue
+
+        returns = prices.pct_change().dropna()
+        df = pd.concat([returns, ff], axis=1).dropna()
+        df.columns = ["Return"] + list(ff.columns)
+
+        if df.empty or "Return" not in df.columns:
+            factor_data.append({
+                "Ticker": t,
+                "Alpha (Ann.)": None,
+                "Beta (MKT)": None,
+                "Beta (SMB)": None,
+                "Beta (HML)": None,
+                "R-Squared": None
+            })
+            continue
+
+        X = sm.add_constant(df[["Mkt-RF", "SMB", "HML"]])
+        y = df["Return"] - df["RF"]
+        model = sm.OLS(y, X).fit()
+
+        factor_data.append({
+            "Ticker": t,
+            "Alpha (Ann.)": round(model.params["const"] * 252, 4),
+            "Beta (MKT)": round(model.params["Mkt-RF"], 4),
+            "Beta (SMB)": round(model.params["SMB"], 4),
+            "Beta (HML)": round(model.params["HML"], 4),
+            "R-Squared": round(model.rsquared, 4)
+        })
+
+    return pd.DataFrame(factor_data)
+
+def diligence(tickers, start_date_str):
+    try:
+        start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
+    except ValueError:
+        st.error("Start date must be in YYYY-MM-DD format.")
+        return pd.DataFrame(), None, None
+
+    end_date = datetime.today()
+    price_data = {}
+
+    for t in tickers:
+        data = yf.download(t, start=start_date, end=end_date, auto_adjust=True, progress=False)["Close"]
+        if data.empty:
+            st.error(f"No data available for {t}.")
+            return pd.DataFrame(), None, None
+        price_data[t] = data
+    adjusted_start = max(df.index[0] for df in price_data.values())
+
+    benchmark = yf.download("SPY", start=adjusted_start, end=end_date, auto_adjust=True, progress=False)["Close"]
+    records = []
+
+    for t in tickers:
+        info = yf.Ticker(t).info
+        nav = info.get("navPrice", np.nan)
+        aum = info.get("totalAssets", np.nan)
+        expense = info.get("netExpenseRatio", np.nan)
+        div_yield = info.get("yield", np.nan)
+
+        data = price_data[t].loc[adjusted_start:]
+        std_dev, sharpe, sortino, max_drawdown, beta = calculate_stats(data, benchmark)
+
+        records.append({
+            "Ticker": t,
+            "NAV ($)": round(nav, 4) if pd.notna(nav) else np.nan,
+            "AUM ($)": format_aum(aum) if pd.notna(aum) else np.nan,
+            "Expense Ratio": f"{expense:.2f}%" if pd.notna(expense) else np.nan,
+            "Dividend Yield": f"{div_yield * 100:.2f}%" if pd.notna(div_yield) else np.nan,
+            "Volatility": f"{std_dev * 100:.2f}%" if pd.notna(std_dev) else np.nan,
+            "Sharpe": sharpe,
+            "Sortino": sortino,
+            "Max Drawdown": max_drawdown,
+            "Beta": beta
+        })
+
+    return pd.DataFrame(records), adjusted_start, end_date
+
 def main():
     st.title("ETF Due Diligence Dashboard")
-    tickers_input = st.text_input("Enter ETF tickers (comma-separated):", "SPY,GLD,OVLH")
-    start_input = st.text_input("Enter start date (YYYY-MM-DD):", "2020-01-01")
+    tickers_input = st.text_input("Enter ETF tickers (comma-separated):", "SPY, GLD, OVLH")
+    start_date_input = st.text_input("Enter start date (YYYY-MM-DD):", "2020-01-01")
 
     if st.button("Run Analysis"):
         tickers = [t.strip().upper() for t in tickers_input.split(",")]
         with st.spinner("Gathering data..."):
-            df, start, end = diligence(tickers, start_input)
+            df, start, end = diligence(tickers, start_date_input)
             if df.empty:
                 return
+            factor_df = factor_diligence(tickers, start, end)
+
             st.subheader("Performance & Risk Metrics")
             st.dataframe(df)
+
+            st.subheader("Fama-French Factor Loadings")
+            st.dataframe(factor_df)
 
             st.subheader("Normalized Price Chart")
             plot_normalized_chart(tickers, start, end)
 
 main()
+
+
+
+
+#------------------------------- for using inside of jupyter
+
+user_input = input("Enter tickers separated by commas: ")
+tickers = [t.strip().upper() for t in user_input.split(",")]
+
+date_input = input("Enter start date (YYYY-MM-DD): ")
+try:
+    start_date = datetime.strptime(date_input, "%Y-%m-%d")
+except ValueError:
+    print("Invalid date format. Use YYYY-MM-DD.")
+else:
+    df, start_date, end_date = diligence(tickers, date_input)
+    if df.empty:
+        print("No data available.")
+    else:
+        factor_df = factor_diligence(tickers, start_date, end_date)
+
+        print("\n--- Performance & Risk Metrics ---")
+        display(HTML(df.to_html(index=False)))
+
+        print("\n--- Fama-French Factor Loadings ---")
+        display(HTML(factor_df.to_html(index=False)))
